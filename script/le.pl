@@ -160,12 +160,12 @@ sub work {
                 my %seen;
                 # Check wildcards last, try www for those unless already seen.
                 foreach my $e (sort { $b cmp $a } @{$le->domains}) {
-                my $domain = $e=~/^\*\.(.+)$/ ? "www.$1" : $e;
-                next if $seen{$domain}++;
-                $opt->{'logger'}->info("Checking $domain");
-                $opt->{'expires'} = $le->check_expiration("https://$domain/");
-                last if (defined $opt->{'expires'});
-            }
+                    my $domain = $e=~/^\*\.(.+)$/ ? "www.$1" : $e;
+                    next if $seen{$domain}++;
+                    $opt->{'logger'}->info("Checking $domain");
+                    $opt->{'expires'} = $le->check_expiration("https://$domain/");
+                    last if (defined $opt->{'expires'});
+                }
             }
         }
         return $opt->{'error'}->("Could not get the certificate expiration value, cannot renew.", 'EXPIRATION_GET') unless (defined $opt->{'expires'});
@@ -177,7 +177,6 @@ sub work {
         }
         $opt->{'logger'}->info("Expiration threshold set at $opt->{'renew'} days, the certificate " . ($opt->{'expires'} < 0 ? "has already expired" : "expires in $opt->{'expires'} days") . " - will be renewing.");
     }
-
     if ($opt->{'email'}) {
         return $opt->{'error'}->($le->error_details, 'EMAIL_SET') if $le->set_account_email($opt->{'email'});
     }
@@ -698,10 +697,10 @@ sub process_challenge_dns {
         print "Wait for DNS to update by checking it with the command: nslookup -q=TXT _acme-challenge.$host\nWhen you see a text record returned, press <Enter>\n";
         <STDIN>;
     } else {
-		my $filename = "$challenge->{domain}.".time;
-		$filename =~ s/\*/wildcard/;
-		_write("./challenges/$filename", "_acme-challenge.$host\n$value");
-	}
+        my $filename = "$challenge->{domain}.".time;
+        $filename =~ s/\*/wildcard/;
+        _write("./challenges/$filename", "_acme-challenge.$host\n$value");
+    }
     return 1;
 }
 
