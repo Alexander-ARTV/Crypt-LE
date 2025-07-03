@@ -671,7 +671,6 @@ sub _set_key {
     my $pem = $key->get_private_key_string;
     my ($n, $e) = $key->get_key_parameters;
     return $self->_status(INVALID_DATA, "Key modulus is divisible by a small prime and will be rejected.") if $self->_is_divisible($n);
-    $key->use_pkcs1_padding;
     $key->use_sha256_hash;
     $self->{key_params} = { n => $n, e => $e };
     $self->{key} = $key;
@@ -2104,6 +2103,27 @@ sub _convert {
     my $self = shift;
     my ($content, $type) = @_;
     return (!$content or $content=~/^\-+BEGIN/) ? $content : $self->der2pem($content, $type);
+}
+
+sub _save_state {
+    my $self = shift;
+    return {
+        domains => $self->{domains},
+        challenges => $self->{challenges},
+        active_challenges => $self->{active_challenges},
+        loaded_domains => $self->{loaded_domains},
+        fingerprint => $self->{fingerprint},
+        finalize => $self->{finalize},
+    };
+}
+
+sub _load_state {
+    my $self = shift;
+    my %attributes = %{(shift)};
+    foreach (keys %attributes) {
+        $self->{$_} = $attributes{$_};
+    }
+    return;
 }
 
 1;

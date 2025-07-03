@@ -12,6 +12,7 @@ use Digest::SHA 'sha256';
 use MIME::Base64 'encode_base64url';
 use Crypt::LE ':errors', ':keys';
 use utf8;
+use Storable;
 
 my $VERSION = '0.40';
 
@@ -125,11 +126,11 @@ sub work {
     } else {
         $opt->{'logger'}->info("Generating a new CSR for domains $opt->{'domains'}");
         if (-e $opt->{'csr-key'}) {
-             # Allow using pre-existing key when generating CSR
-             return $opt->{'error'}->("Could not load existing CSR key from $opt->{'csr-key'} - " . $le->error_details, 'CSR_KEY_LOAD') if $le->load_csr_key($opt->{'csr-key'});
-             $opt->{'logger'}->info("New CSR will be based on '$opt->{'csr-key'}' key");
+            # Allow using pre-existing key when generating CSR
+            return $opt->{'error'}->("Could not load existing CSR key from $opt->{'csr-key'} - " . $le->error_details, 'CSR_KEY_LOAD') if $le->load_csr_key($opt->{'csr-key'});
+            $opt->{'logger'}->info("New CSR will be based on '$opt->{'csr-key'}' key");
         } else {
-             $opt->{'logger'}->info("New CSR will be based on a generated key");
+            $opt->{'logger'}->info("New CSR will be based on a generated key");
         }
         my ($type, $attr) = $opt->{'curve'} ? (KEY_ECC, $opt->{'curve'}) : (KEY_RSA, $opt->{'legacy'} ? 2048 : 4096);
         $le->generate_csr($opt->{'domains'}, $type, $attr) == OK or return $opt->{'error'}->("Could not generate a CSR: " . $le->error_details, 'CSR_GENERATE');
@@ -159,12 +160,12 @@ sub work {
                 my %seen;
                 # Check wildcards last, try www for those unless already seen.
                 foreach my $e (sort { $b cmp $a } @{$le->domains}) {
-                   my $domain = $e=~/^\*\.(.+)$/ ? "www.$1" : $e;
-                   next if $seen{$domain}++;
-                   $opt->{'logger'}->info("Checking $domain");
-                   $opt->{'expires'} = $le->check_expiration("https://$domain/");
-                   last if (defined $opt->{'expires'});
-               }
+                my $domain = $e=~/^\*\.(.+)$/ ? "www.$1" : $e;
+                next if $seen{$domain}++;
+                $opt->{'logger'}->info("Checking $domain");
+                $opt->{'expires'} = $le->check_expiration("https://$domain/");
+                last if (defined $opt->{'expires'});
+            }
             }
         }
         return $opt->{'error'}->("Could not get the certificate expiration value, cannot renew.", 'EXPIRATION_GET') unless (defined $opt->{'expires'});
@@ -176,7 +177,7 @@ sub work {
         }
         $opt->{'logger'}->info("Expiration threshold set at $opt->{'renew'} days, the certificate " . ($opt->{'expires'} < 0 ? "has already expired" : "expires in $opt->{'expires'} days") . " - will be renewing.");
     }
-    
+
     if ($opt->{'email'}) {
         return $opt->{'error'}->($le->error_details, 'EMAIL_SET') if $le->set_account_email($opt->{'email'});
     }
@@ -185,33 +186,51 @@ sub work {
     my $reg = _register($le, $opt);
     return $reg if $reg;
 
-    # Build a copy of the parameters from the command line and added during the runtime, reduced to plain vars and hashrefs.
-    my %callback_data = map { $_ => $opt->{$_} } grep { ! ref $opt->{$_} or ref $opt->{$_} eq 'HASH' } keys %{$opt};
-
     # We might not need to re-verify, verification holds for a while. NB: Only do that for the standard LE servers.
     my $new_crt_status = ($opt->{'server'} or $opt->{'directory'}) ? AUTH_ERROR : $le->request_certificate();
-    unless ($new_crt_status) {
-        $opt->{'logger'}->info("Received domain certificate, no validation required at this time.");
-    } else {
-        # If it's not an auth problem, but blacklisted domains for example - stop.
-        return $opt->{'error'}->("Error requesting certificate: " . $le->error_details, 'CERTIFICATE_GET') if $new_crt_status != AUTH_ERROR;
-        # Handle DNS internally along with HTTP
-        my ($challenge_handler, $verification_handler) = ($opt->{'handler'}, $opt->{'handler'});
-        if (!$opt->{'handler'}) {
-            if ($opt->{'handle-as'}) {
-                return $opt->{'error'}->("Only 'http' and 'dns' can be handled internally, use external modules for other verification types.", 'VERIFICATION_METHOD') unless $opt->{'handle-as'}=~/^(http|dns)$/i;
-                if (lc($1) eq 'dns') {
-                    ($challenge_handler, $verification_handler) = (\&process_challenge_dns, \&process_verification_dns);
-                }
+
+    my %callback_data;
+
+    # Handle DNS internally along with HTTP
+    my ($challenge_handler, $verification_handler) = ($opt->{'handler'}, $opt->{'handler'});
+    if (!$opt->{'handler'}) {
+        if ($opt->{'handle-as'}) {
+            return $opt->{'error'}->("Only 'http' and 'dns' can be handled internally, use external modules for other verification types.", 'VERIFICATION_METHOD') unless $opt->{'handle-as'}=~/^(http|dns)$/i;
+            if (lc($1) eq 'dns') {
+                ($challenge_handler, $verification_handler) = (\&process_challenge_dns, \&process_verification_dns);
             }
         }
+    }
 
-        return $opt->{'error'}->($le->error_details, 'CHALLENGE_REQUEST') if $le->request_challenge();
-        return $opt->{'error'}->($le->error_details, 'CHALLENGE_ACCEPT') if $le->accept_challenge($challenge_handler || \&process_challenge, \%callback_data, $opt->{'handle-as'});
+    unless ($opt->{'resume'}) {
+        # Build a copy of the parameters from the command line and added during the runtime, reduced to plain vars and hashrefs.
+        %callback_data = map { $_ => $opt->{$_} } grep { ! ref $opt->{$_} or ref $opt->{$_} eq 'HASH' } keys %{$opt};
 
-        # If delayed mode is requested, exit early with the same code as for the issuance.
-        return { code => $opt->{'issue-code'}||0 } if $opt->{'delayed'};
+        unless ($new_crt_status) {
+            $opt->{'logger'}->info("Received domain certificate, no validation required at this time.");
+        } else {
+            # If it's not an auth problem, but blacklisted domains for example - stop.
+            return $opt->{'error'}->("Error requesting certificate: " . $le->error_details, 'CERTIFICATE_GET') if $new_crt_status != AUTH_ERROR;
+            mkdir('./challenges');
+            return $opt->{'error'}->($le->error_details, 'CHALLENGE_REQUEST') if $le->request_challenge();
+            return $opt->{'error'}->($le->error_details, 'CHALLENGE_ACCEPT') if $le->accept_challenge($challenge_handler || \&process_challenge, \%callback_data, $opt->{'handle-as'});
 
+            # If delayed mode is requested, exit early with the same code as for the issuance.
+            if ($opt->{'delayed'}) {
+                store(\%callback_data, 'store_callback_data');
+                store($le->_save_state(), 'store_le');
+                return { code => $opt->{'issue-code'} || 0 };
+            }
+        }
+    } else {
+        %callback_data = %{retrieve('store_callback_data')};
+        my $state = retrieve('store_le');
+        $le->_load_state($state);
+        unlink 'store_callback_data';
+        unlink 'store_le';
+    }
+
+    if ($new_crt_status || $opt->{'resume'}) {
         # Refresh nonce in case of a long delay between the challenge and the verification step.
         return $opt->{'error'}->($le->error_details, 'NONCE_REFRESH') unless $le->new_nonce();
         return $opt->{'error'}->($le->error_details, 'CHALLENGE_VERIFY') if $le->verify_challenge($verification_handler || \&process_verification, \%callback_data, $opt->{'handle-as'});
@@ -294,7 +313,7 @@ sub parse_options {
 
     GetOptions ($opt, 'key=s', 'csr=s', 'csr-key=s', 'domains=s', 'path=s', 'crt=s', 'email=s', 'curve=s', 'server=s', 'directory=s', 'api=i', 'config=s', 'renew=i', 'renew-check=s','issue-code=i',
         'handle-with=s', 'handle-as=s', 'handle-params=s', 'complete-with=s', 'complete-params=s', 'log-config=s', 'update-contacts=s', 'export-pfx=s', 'tag-pfx=s',
-        'eab-kid=s', 'eab-hmac-key=s', 'ca=s', 'alternative=i', 'generate-missing', 'generate-only', 'delay=i', 'max-server-delay=i', 'revoke', 'revoke-reason=s', 'legacy', 'unlink', 'delayed', 'live', 'quiet', 'debug+', 'help') ||
+        'eab-kid=s', 'eab-hmac-key=s', 'ca=s', 'alternative=i', 'generate-missing', 'generate-only', 'delay=i', 'max-server-delay=i', 'revoke', 'revoke-reason=s', 'legacy', 'unlink', 'delayed', 'resume', 'live', 'quiet', 'debug+', 'help') ||
         return $opt->{'error'}->("Use --help to see the usage examples.", 'PARAMETERS_PARSE');
 
     if ($opt->{'config'}) {
@@ -678,7 +697,11 @@ sub process_challenge_dns {
     unless ($params->{'delayed'}) {
         print "Wait for DNS to update by checking it with the command: nslookup -q=TXT _acme-challenge.$host\nWhen you see a text record returned, press <Enter>\n";
         <STDIN>;
-    }
+    } else {
+		my $filename = "$challenge->{domain}.".time;
+		$filename =~ s/\*/wildcard/;
+		_write("./challenges/$filename", "_acme-challenge.$host\n$value");
+	}
     return 1;
 }
 
@@ -886,7 +909,7 @@ EOF
 -update-contacts <emails>    : Update contact details.
 -export-pfx <password>       : Export PFX (Windows binaries only).
 -tag-pfx <tag>               : Tag PFX with a specific name.
--alternative <num>           : Save an alternative ceritifcate (if available).
+-alternative <num>           : Save an alternative certificate (if available).
 -config <file>               : Configuration file for the client.
 -log-config <file>           : Configuration file for logging.
 -generate-missing            : Generate missing files (key, csr and csr-key).
@@ -898,6 +921,7 @@ EOF
 -max-server-delay <seconds>  : Cap server-specified delay (which could be unreasonably long).
 -legacy                      : Legacy mode (shorter keys, separate CA file).
 -delayed                     : Exit after requesting the challenge.
+-resume                      : Pick-up after running delayed and completing challenge(s). 
 -live                        : Use the live server instead of the test one.
 -debug                       : Print out debug messages.
 -quiet                       : Suppress all messages but errors.
