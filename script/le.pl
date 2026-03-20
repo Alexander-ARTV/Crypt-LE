@@ -4,6 +4,7 @@ use warnings;
 use Getopt::Long;
 use IO::File;
 use JSON::MaybeXS;
+use Log::Dispatch;
 use Log::Dispatch::FileRotate;
 use Log::Log4perl;
 use Log::Log4perl::Level;
